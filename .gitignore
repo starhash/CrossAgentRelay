@@ -1,0 +1,7 @@
+# Publish only the MCP server, documentation, and license.
+*
+!/.gitignore
+!/mcp.js
+!/README.md
+!/USAGE.md
+!/LICENSE
