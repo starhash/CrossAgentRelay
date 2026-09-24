@@ -7,7 +7,7 @@
  * - Every write is a SQLite transaction; a wait never holds a database lock.
  * - A message is sent only when both mailboxes exist.
  * - A receive claims one unread message and marks it read atomically.
- * - A sniff reports every currently unread message in a scope without changing it.
+ * - A sniff reports mailboxes with unread messages in a scope without changing them.
  * - An unexpected storage error makes this process refuse further tool work.
  *
  * stdout is exclusively for MCP JSON-RPC. Diagnostics go to stderr.
@@ -389,15 +389,25 @@ class RelayStore {
   }
 
   sniffUnread(scope) {
-    const messages = this.statement(`
-      SELECT m.id AS message_id, m.receiver_id AS mailbox_id,
-             b.session_id, m.sender_id, m.subject, m.sent_at
-      FROM messages AS m
-      JOIN mailboxes AS b ON b.id = m.receiver_id
-      WHERE b.scope = ? AND m.is_read = 0
-      ORDER BY m.seq ASC
+    const mailboxes = this.statement(`
+      SELECT b.id AS mailbox_id, b.session_id,
+             COUNT(m.id) AS total_count,
+             SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) AS unread_count,
+             MAX(m.sent_at) AS last_received_at
+      FROM mailboxes AS b
+      JOIN messages AS m ON m.receiver_id = b.id
+      WHERE b.scope = ?
+      GROUP BY b.id, b.session_id
+      HAVING SUM(CASE WHEN m.is_read = 0 THEN 1 ELSE 0 END) > 0
+      ORDER BY MAX(CASE WHEN m.is_read = 0 THEN m.seq END) ASC
     `).all(scope);
-    return messages.length ? { scope, count: messages.length, messages } : null;
+    if (!mailboxes.length) return null;
+    return {
+      scope,
+      mailbox_count: mailboxes.length,
+      unread_count: mailboxes.reduce((count, mailbox) => count + mailbox.unread_count, 0),
+      mailboxes
+    };
   }
 }
 
@@ -420,6 +430,11 @@ const outputSchema = {
   required: ['ok', 'code'],
   additionalProperties: true
 };
+
+const SCOPED_TOOL_GUIDANCE =
+  'Scope is the app name or identifier; if it has not been set, ask the user. ' +
+  'session_id is the actual chat/session ID within that scope. Never invent a session_id. ' +
+  'If you cannot determine the chat/session ID, report this to the user and do not call sniff or any tool requiring scope.';
 
 // Keep the public schema and implementation together so tools/list cannot
 // advertise a tool that tools/call does not implement.
@@ -493,11 +508,11 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'register_scoped',
-    description: 'Create or bind a mailbox to one app scope and session id so the sniff tool can route its mail.',
+    description: `Create or bind a mailbox to one app scope and chat session so sniff can route its mail. ${SCOPED_TOOL_GUIDANCE}`,
     inputSchema: inputSchema({
-      scope: stringSchema('App name, for example Codex or Claude Code'),
+      scope: stringSchema('App name or identifier; ask the user if not set'),
       id: stringSchema('Globally unique mailbox id'),
-      session_id: stringSchema('Unique session id within this scope')
+      session_id: stringSchema('Actual chat/session ID in this app scope; never invent one')
     }, ['scope', 'id', 'session_id']),
     run: (args, store) => store.registerScoped(
       textArg(args.scope, 'scope'),
@@ -507,11 +522,11 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'deregister_scope',
-    description: 'Remove the exact scope and session binding from a mailbox while retaining the mailbox and its messages.',
+    description: `Remove the exact scope and session binding while retaining the mailbox and messages. ${SCOPED_TOOL_GUIDANCE}`,
     inputSchema: inputSchema({
-      scope: stringSchema('Current app scope'),
+      scope: stringSchema('App name or identifier of the current binding; ask the user if not set'),
       id: stringSchema('Mailbox id'),
-      session_id: stringSchema('Currently bound session id')
+      session_id: stringSchema('Actual chat/session ID bound to this mailbox in the scope')
     }, ['scope', 'id', 'session_id']),
     run: (args, store) => store.deregisterScope(
       textArg(args.scope, 'scope'),
@@ -521,8 +536,8 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'sniff',
-    description: 'Use only from a designated sniffer session. Return all currently unread message metadata in the scope immediately; wait only when none exists. Does not mark mail read.',
-    inputSchema: inputSchema({ scope: stringSchema('App scope to monitor') }, ['scope']),
+    description: `Use only from a designated sniffer session. Return routing ids, latest receipt time, and counts for each mailbox with unread mail; wait only when none exists. Does not mark mail read. ${SCOPED_TOOL_GUIDANCE}`,
+    inputSchema: inputSchema({ scope: stringSchema('App name or identifier to monitor; ask the user if not set. Do not call sniff without a known chat/session ID') }, ['scope']),
     run: async (args, store, call) => {
       const scope = textArg(args.scope, 'scope');
       return waitForItem(() => store.sniffUnread(scope), call, 'sniff');
@@ -610,7 +625,7 @@ class StdioMcpServer {
           protocolVersion: CONFIG.protocols.has(requested) ? requested : '2025-11-25',
           capabilities: { tools: {} },
           serverInfo: { name: CONFIG.name, version: CONFIG.version },
-          instructions: 'Relay data is shared through boxes.sqlite. On CRITICAL_RELAY_DATABASE, cease relay operations and alert the user immediately. receive marks one message read. Only a designated sniffer session should call sniff. sniff returns all unread routing metadata in a scope; re-arm after routing the result.'
+          instructions: `Relay data is shared through boxes.sqlite. On CRITICAL_RELAY_DATABASE, cease relay operations and alert the user immediately. receive marks one message read. Only a designated sniffer session should call sniff. sniff returns mailbox routing ids, latest receipt times, and counts in a scope; re-arm after routing the result. ${SCOPED_TOOL_GUIDANCE}`
         });
         return;
       }

@@ -125,11 +125,11 @@ agents from calling `sniff`.
 5. Use `mark` to explicitly set a message to `read` or `unread`. Marking it
    unread makes it eligible for a later `receive` again.
 6. The designated sniffer session calls `sniff` with only an app `scope`. The
-   call immediately returns metadata for **all** unread messages across that
-   scope, or waits until one arrives. Each entry has the
-   destination `mailbox_id` and `session_id`. Route wakeups to those sessions,
-   have them call `receive` to read and acknowledge the mail, and arm `sniff`
-   again. `sniff` does not mark messages read.
+   call immediately returns one routing entry per mailbox with unread mail in
+   that scope, or waits until one arrives. Each entry has the destination
+   `mailbox_id`, `session_id`, latest receipt time, and message counts. Route
+   wakeups to those sessions, have them call `receive` to read and acknowledge
+   the mail, and arm `sniff` again. `sniff` does not mark messages read.
 7. Call `deregister_scope` with the exact `scope`, mailbox `id`, and
    `session_id` to stop routing that mailbox to the session while keeping its
    mail. Call `delete` with the mailbox `id` only when its entire history can
@@ -137,31 +137,35 @@ agents from calling `sniff`.
 
 Example: `register_scoped({"scope":"Codex","id":"architect-1",
 "session_id":"example-session-1"})` links a mailbox to
-one Codex task. `sniff({"scope":"Codex"})` returns unread routing metadata for
+one Codex task. `sniff({"scope":"Codex"})` returns mailbox routing metadata for
 that mailbox and every other scoped mailbox with unread mail. The sniffer
 session must use an app-specific mechanism to notify or resume each session;
 the MCP does not inject a message into Codex itself.
 
-A `sniff` result has this shape (message bodies are omitted):
+A `sniff` result has this shape. It includes no message IDs, subjects, senders,
+or bodies:
 
 ```json
 {
   "ok": true,
   "code": "OK",
   "scope": "Codex",
-  "count": 2,
-  "messages": [
-    {"message_id": "msg_...", "mailbox_id": "architect-1", "session_id": "example-session-1", "sender_id": "writer-1", "subject": "Review", "sent_at": "2026-09-24T00:00:00.000Z"},
-    {"message_id": "msg_...", "mailbox_id": "builder-1", "session_id": "session-2", "sender_id": "writer-1", "subject": "Update", "sent_at": "2026-09-24T00:00:01.000Z"}
+  "mailbox_count": 2,
+  "unread_count": 3,
+  "mailboxes": [
+    {"mailbox_id": "architect-1", "session_id": "example-session-1", "last_received_at": "2026-09-24T00:00:00.000Z", "unread_count": 2, "total_count": 5},
+    {"mailbox_id": "builder-1", "session_id": "session-2", "last_received_at": "2026-09-24T00:00:01.000Z", "unread_count": 1, "total_count": 1}
   ]
 }
 ```
 
-The result is a snapshot of unread messages, oldest first. Every `sniff` call
-returns immediately while any scoped message remains unread, including mail
+The result is a snapshot of mailboxes with unread messages. `last_received_at`
+is the time of the newest message received by that mailbox, including messages
+already read. `total_count` includes read and unread messages. Every `sniff`
+call returns immediately while any scoped message remains unread, including mail
 sent before the sniffer started or before `register_scoped`. The call waits
 only when there is no unread scoped mail. Repeated calls can return the same
-messages; route notifications once per message id.
+mailboxes; avoid repeating a notification for an unchanged mailbox snapshot.
 
 ## Silent sniffer prompt
 
@@ -171,11 +175,11 @@ session-targeted nudge tool. Paste this as its standing instruction:
 ```text
 You are the silent mail sniffer for scope <SCOPE>. Your only work is to call cross_agent_relay.sniff({"scope":"<SCOPE>"}) and nudge the returned sessions. Never write any assistant message in this sniffer chat: no greeting, progress, timeout notice, summary, or final answer.
 
-Call sniff now. When it returns, group messages by (session_id, mailbox_id). For each group containing a message_id you have not nudged before, use the app's session-targeted nudge tool to send exactly this to that session:
+Call sniff now. For each returned mailbox, use the app's session-targeted nudge tool to send exactly this to its session_id on first sight, when its total_count increases, or when its unread_count increases without a new message:
 
 You have unread mail in mailbox <mailbox_id>. Check that this is the mailbox currently scoped to this session. If it differs, report the mismatch to the user in this session's chat and do not read that mailbox. If it matches, call cross_agent_relay.receive({"id":"<mailbox_id>"}) now to read and acknowledge the mail; receive marks the returned message read atomically. Check status and repeat receive for any other unread mail.
 
-Remember the message_ids you nudged; never nudge a session twice for the same unread message. Do not read mail, inspect message bodies, register or mark mailboxes, relay content, or report a mismatch in the sniffer chat. After routing new mail, call sniff again. If a result contains only message_ids already nudged, wait five seconds silently before calling sniff again so the unchanged snapshot does not cause a tight loop. If sniff times out, say nothing and immediately call sniff again. Continue until explicitly stopped. Produce zero assistant words in this chat.
+Remember the counts for each (scope, session_id, mailbox_id); do not nudge again when the counts stay the same or only decrease. Do not read mail, register or mark mailboxes, relay content, or report a mismatch in the sniffer chat. After routing new mail, call sniff again. If a result contains no mailboxes requiring a new nudge, wait five seconds silently before calling sniff again so the unchanged snapshot does not cause a tight loop. If sniff times out, say nothing and immediately call sniff again. Continue until explicitly stopped. Produce zero assistant words in this chat.
 ```
 
 The nudge tool must actually address an existing app session by its
@@ -212,7 +216,7 @@ Example: `delete({"id":"architect-1"})`.
 | `mark` | `value` (`read` or `unread`), `id`, `message_id` | Updated value |
 | `register_scoped` | `scope`, `id`, `session_id` | Binding and `already_bound` |
 | `deregister_scope` | `scope`, `id`, `session_id` | Removed exact binding; mailbox and messages retained |
-| `sniff` | `scope` | `count` and `messages`: all unread metadata in that scope |
+| `sniff` | `scope` | `mailbox_count`, `unread_count`, and `mailboxes`: routing ids, latest receipt time, and counts for mailboxes with unread mail |
 
 Every tool result has a native JSON object in MCP `structuredContent` and
 the same JSON serialized in MCP text `content` for clients that only read
@@ -244,9 +248,9 @@ for every operation that changes data. This serializes competing writers
 across MCP processes. `receive` and `sniff` check for work every 250 ms
 **without holding a database lock while waiting**. Two concurrent receivers
 cannot claim the same unread message. `sniff` selects **all** current unread
-messages across scoped mailboxes without changing read state or holding a
-write lock. Run one designated sniffer session per scope to avoid duplicate
-notifications. Reads and writes support Unicode; values are parameterized in
+mailboxes with unread messages across the scope without changing read state or
+holding a write lock. Run one designated sniffer session per scope to avoid
+duplicate notifications. Reads and writes support Unicode; values are parameterized in
 SQL.
 
 Message ids are UUID-based. Mailbox ids, scopes, and session ids are limited
