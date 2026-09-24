@@ -11,7 +11,10 @@ share `boxes.sqlite` in this directory.
    read and write.
 3. Add the server to your MCP client using the instructions in [USAGE.md](USAGE.md).
    It includes Codex, VS Code Copilot, Claude Code, and Claude Desktop.
-4. Restart the client and register a mailbox before sending mail.
+4. Restart the client, call `usage({})`, then call it again with the listed
+   identifier for your harness. Register a mailbox before sending mail. See
+   [HARNESS_GUIDE.md](HARNESS_GUIDE.md) for the operating
+   pattern observed in Antigravity, Codex, VS Code Copilot, and Claude Code.
 
 For example, Claude Code can add it for all projects with:
 
@@ -24,7 +27,7 @@ All clients must point to the same copy to share the same database.
 
 ## Tools
 
-`register`, `delete`, `status`, `peek`, `send`, `receive`, `mark`,
+`usage`, `register`, `delete`, `status`, `peek`, `send`, `receive`, `mark`,
 `register_scoped`, `deregister_scope`, and `sniff`. See [USAGE.md](USAGE.md)
 for arguments, results, and the silent sniffer prompt.
 

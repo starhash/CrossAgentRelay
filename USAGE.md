@@ -115,22 +115,28 @@ agents from calling `sniff`.
 
 ## Typical sequence
 
-1. Call `register_scoped` for a mailbox that a sniffer needs to route, or
+1. Call `usage({})` first to get the exact harness identifiers. Call it again
+   with the listed identifier for your harness, such as
+   `usage({"scope":"codex"})`, for the shared relay rules and that harness's
+   guidance. Ask the user if your harness is unknown. This guide lookup does
+   not change case-sensitive mailbox scope bindings. The same guidance is in
+   [HARNESS_GUIDE.md](HARNESS_GUIDE.md).
+2. Call `register_scoped` for a mailbox that a sniffer needs to route, or
    `register` for an ordinary mailbox. Mailbox ids are global across apps.
-2. Both sender and receiver must have registered mailboxes before `send`.
-3. Call `send` with `sender_id`, `receiver_id`, `subject`, and `body`.
-4. The receiver calls `receive` to read and acknowledge each unread message.
+3. Both sender and receiver must have registered mailboxes before `send`.
+4. Call `send` with `sender_id`, `receiver_id`, `subject`, and `body`.
+5. The receiver calls `receive` to read and acknowledge each unread message.
    `receive` atomically marks the returned message read. `peek` only inspects
    mail and does not acknowledge it.
-5. Use `mark` to explicitly set a message to `read` or `unread`. Marking it
+6. Use `mark` to explicitly set a message to `read` or `unread`. Marking it
    unread makes it eligible for a later `receive` again.
-6. The designated sniffer session calls `sniff` with only an app `scope`. The
+7. The designated sniffer session calls `sniff` with only an app `scope`. The
    call immediately returns one routing entry per mailbox with unread mail in
    that scope, or waits until one arrives. Each entry has the destination
    `mailbox_id`, `session_id`, latest receipt time, and message counts. Route
    wakeups to those sessions, have them call `receive` to read and acknowledge
    the mail, and arm `sniff` again. `sniff` does not mark messages read.
-7. Call `deregister_scope` with the exact `scope`, mailbox `id`, and
+8. Call `deregister_scope` with the exact `scope`, mailbox `id`, and
    `session_id` to stop routing that mailbox to the session while keeping its
    mail. Call `delete` with the mailbox `id` only when its entire history can
    be permanently removed.
@@ -207,6 +213,7 @@ Example: `delete({"id":"architect-1"})`.
 
 | Tool | Required arguments | Successful result |
 | --- | --- | --- |
+| `usage` | none on first call; optional exact `scope` on second | Lists harness identifiers, then returns shared rules and guidance for the selected harness; no mailbox required |
 | `register` | `id` | `{ok:true,code:"OK",id}` |
 | `delete` | `id` | Deleted mailbox and counts of removed messages and wakeups |
 | `status` | `id` | `unread_count`, `total_count` |
@@ -222,7 +229,7 @@ Every tool result has a native JSON object in MCP `structuredContent` and
 the same JSON serialized in MCP text `content` for clients that only read
 text. Successes have `ok: true, code: "OK"`. Errors have `ok: false`, a
 machine-readable `code`, and a `message`; MCP `isError` is also true. Normal
-errors include `INVALID_ARGUMENT`, `ALREADY_REGISTERED`,
+errors include `INVALID_ARGUMENT`, `UNKNOWN_HARNESS`, `ALREADY_REGISTERED`,
 `SESSION_ALREADY_REGISTERED`, `MAILBOX_NOT_REGISTERED`,
 `SCOPE_NOT_REGISTERED`, `SCOPE_BINDING_MISMATCH`, and `MESSAGE_NOT_FOUND`.
 
